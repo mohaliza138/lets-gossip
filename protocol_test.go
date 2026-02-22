@@ -1,1 +1,203 @@
-package mainimport (	"encoding/json"	"testing")func TestNewUUID_IsUnique(t *testing.T) {	first := newUUID()	second := newUUID()	if first == second {		t.Fatal("two consecutive UUIDs must not be equal")	}	if len(first) != 36 {		t.Fatalf("UUID length: want 36, got %d", len(first))	}}func TestEncodeDecodeMessage_RoundTrip(t *testing.T) {	original, err := buildGossip("node-1", "127.0.0.1:8001", 5, "topic", "hello", "node-1")	if err != nil {		t.Fatalf("buildGossip: %v", err)	}	encoded, err := encodeMessage(original)	if err != nil {		t.Fatalf("encodeMessage: %v", err)	}	decoded, err := decodeMessage(encoded)	if err != nil {		t.Fatalf("decodeMessage: %v", err)	}	if decoded.MessageType != TypeGossip {		t.Fatalf("MessageType: want %s, got %s", TypeGossip, decoded.MessageType)	}	if decoded.TimeToLive != 5 {		t.Fatalf("TimeToLive: want 5, got %d", decoded.TimeToLive)	}	if decoded.MessageID != original.MessageID {		t.Fatal("MessageID changed after encode/decode round trip")	}}func TestDecodeMessage_RejectsInvalidJSON(t *testing.T) {	if _, err := decodeMessage([]byte("not valid json")); err == nil {		t.Fatal("expected error for invalid JSON input")	}}func TestDecodeMessage_RejectsEmptyObject(t *testing.T) {	if _, err := decodeMessage([]byte("{}")); err == nil {		t.Fatal("expected error for empty JSON object")	}}func TestDecodeMessage_RejectsUnknownMessageType(t *testing.T) {	message, _ := buildPing("node-1", "127.0.0.1:8001", "ping-identifier", 1)	raw, _ := encodeMessage(message)	var fields map[string]any	json.Unmarshal(raw, &fields)	fields["message_type"] = "BOGUS_TYPE"	tampered, _ := json.Marshal(fields)	if _, err := decodeMessage(tampered); err == nil {		t.Fatal("expected error for unknown message type")	}}func TestDecodeMessage_RejectsUnsupportedVersion(t *testing.T) {	message, _ := buildPing("node-1", "127.0.0.1:8001", "ping-identifier", 1)	raw, _ := encodeMessage(message)	var fields map[string]any	json.Unmarshal(raw, &fields)	fields["version"] = 99	tampered, _ := json.Marshal(fields)	if _, err := decodeMessage(tampered); err == nil {		t.Fatal("expected error for unsupported protocol version")	}}func TestDecodeGossipPayload_FieldsCorrect(t *testing.T) {	message, _ := buildGossip("node-1", "127.0.0.1:8001", 8, "news", "important data", "node-1")	payload, err := decodeGossipPayload(message)	if err != nil {		t.Fatalf("decodeGossipPayload: %v", err)	}	if payload.Topic != "news" {		t.Fatalf("Topic: want news, got %s", payload.Topic)	}	if payload.Data != "important data" {		t.Fatalf("Data: want 'important data', got %s", payload.Data)	}}func TestDecodePingPayload_FieldsCorrect(t *testing.T) {	message, _ := buildPing("node-1", "127.0.0.1:8001", "ping-identifier-42", 7)	payload, err := decodePingPayload(message)	if err != nil {		t.Fatalf("decodePingPayload: %v", err)	}	if payload.PingIdentifier != "ping-identifier-42" {		t.Fatalf("PingIdentifier: want ping-identifier-42, got %s", payload.PingIdentifier)	}	if payload.Sequence != 7 {		t.Fatalf("Sequence: want 7, got %d", payload.Sequence)	}}func TestDecodePongPayload_FieldsCorrect(t *testing.T) {	message, _ := buildPong("node-1", "127.0.0.1:8001", "ping-identifier-42", 7)	payload, err := decodePongPayload(message)	if err != nil {		t.Fatalf("decodePongPayload: %v", err)	}	if payload.PingIdentifier != "ping-identifier-42" {		t.Fatalf("PingIdentifier: want ping-identifier-42, got %s", payload.PingIdentifier)	}	if payload.Sequence != 7 {		t.Fatalf("Sequence: want 7, got %d", payload.Sequence)	}}func TestDecodeHelloPayload_HasCapabilities(t *testing.T) {	message, _ := buildHello("node-1", "127.0.0.1:8001", nil)	payload, err := decodeHelloPayload(message)	if err != nil {		t.Fatalf("decodeHelloPayload: %v", err)	}	if len(payload.Capabilities) == 0 {		t.Fatal("expected non-empty capabilities list")	}}func TestDecodeIHavePayload_FieldsCorrect(t *testing.T) {	ids := []string{"message-id-1", "message-id-2", "message-id-3"}	message, _ := buildIHave("node-1", "127.0.0.1:8001", ids, 32)	payload, err := decodeIHavePayload(message)	if err != nil {		t.Fatalf("decodeIHavePayload: %v", err)	}	if len(payload.MessageIDs) != 3 {		t.Fatalf("MessageIDs count: want 3, got %d", len(payload.MessageIDs))	}	if payload.MaxIDs != 32 {		t.Fatalf("MaxIDs: want 32, got %d", payload.MaxIDs)	}}func TestDecodeIWantPayload_FieldsCorrect(t *testing.T) {	ids := []string{"message-id-1", "message-id-2"}	message, _ := buildIWant("node-1", "127.0.0.1:8001", ids)	payload, err := decodeIWantPayload(message)	if err != nil {		t.Fatalf("decodeIWantPayload: %v", err)	}	if len(payload.MessageIDs) != 2 {		t.Fatalf("MessageIDs count: want 2, got %d", len(payload.MessageIDs))	}}func TestDecodePeersListPayload_FieldsCorrect(t *testing.T) {	peers := []PeerInfo{		{NodeID: "node-1", Address: "127.0.0.1:8001"},		{NodeID: "node-2", Address: "127.0.0.1:8002"},	}	message, _ := buildPeersList("node-0", "127.0.0.1:8000", peers)	payload, err := decodePeersListPayload(message)	if err != nil {		t.Fatalf("decodePeersListPayload: %v", err)	}	if len(payload.Peers) != 2 {		t.Fatalf("Peers count: want 2, got %d", len(payload.Peers))	}}func TestSplitHostPort_ValidAddress(t *testing.T) {	host, port, err := splitHostPort("127.0.0.1:8001")	if err != nil {		t.Fatalf("unexpected error: %v", err)	}	if host != "127.0.0.1" {		t.Fatalf("host: want 127.0.0.1, got %s", host)	}	if port != "8001" {		t.Fatalf("port: want 8001, got %s", port)	}}func TestSplitHostPort_MissingColon(t *testing.T) {	if _, _, err := splitHostPort("noport"); err == nil {		t.Fatal("expected error for address without colon")	}}func TestForwardedMessage_PreservesMessageID(t *testing.T) {	original, _ := buildGossip("node-1", "127.0.0.1:8001", 8, "topic", "data", "node-1")	forwarded := *original	forwarded.TimeToLive = original.TimeToLive - 1	if forwarded.MessageID != original.MessageID {		t.Fatal("MessageID must not change when a message is forwarded")	}	if forwarded.TimeToLive != original.TimeToLive-1 {		t.Fatal("TimeToLive was not decremented correctly")	}}
+package main
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestNewUUID_IsUnique(t *testing.T) {
+	first := newUUID()
+	second := newUUID()
+	if first == second {
+		t.Fatal("two consecutive UUIDs must not be equal")
+	}
+	if len(first) != 36 {
+		t.Fatalf("UUID length: want 36, got %d", len(first))
+	}
+}
+
+func TestEncodeDecodeMessage_RoundTrip(t *testing.T) {
+	original, err := buildGossip("node-1", "127.0.0.1:8001", 5, "topic", "hello", "node-1")
+	if err != nil {
+		t.Fatalf("buildGossip: %v", err)
+	}
+	encoded, err := encodeMessage(original)
+	if err != nil {
+		t.Fatalf("encodeMessage: %v", err)
+	}
+	decoded, err := decodeMessage(encoded)
+	if err != nil {
+		t.Fatalf("decodeMessage: %v", err)
+	}
+	if decoded.MessageType != TypeGossip {
+		t.Fatalf("MessageType: want %s, got %s", TypeGossip, decoded.MessageType)
+	}
+	if decoded.TimeToLive != 5 {
+		t.Fatalf("TimeToLive: want 5, got %d", decoded.TimeToLive)
+	}
+	if decoded.MessageID != original.MessageID {
+		t.Fatal("MessageID changed after encode/decode round trip")
+	}
+}
+
+func TestDecodeMessage_RejectsInvalidJSON(t *testing.T) {
+	if _, err := decodeMessage([]byte("not valid json")); err == nil {
+		t.Fatal("expected error for invalid JSON input")
+	}
+}
+
+func TestDecodeMessage_RejectsEmptyObject(t *testing.T) {
+	if _, err := decodeMessage([]byte("{}")); err == nil {
+		t.Fatal("expected error for empty JSON object")
+	}
+}
+
+func TestDecodeMessage_RejectsUnknownMessageType(t *testing.T) {
+	message, _ := buildPing("node-1", "127.0.0.1:8001", "ping-identifier", 1)
+	raw, _ := encodeMessage(message)
+	var fields map[string]any
+	json.Unmarshal(raw, &fields)
+	fields["message_type"] = "BOGUS_TYPE"
+	tampered, _ := json.Marshal(fields)
+	if _, err := decodeMessage(tampered); err == nil {
+		t.Fatal("expected error for unknown message type")
+	}
+}
+
+func TestDecodeMessage_RejectsUnsupportedVersion(t *testing.T) {
+	message, _ := buildPing("node-1", "127.0.0.1:8001", "ping-identifier", 1)
+	raw, _ := encodeMessage(message)
+	var fields map[string]any
+	json.Unmarshal(raw, &fields)
+	fields["version"] = 99
+	tampered, _ := json.Marshal(fields)
+	if _, err := decodeMessage(tampered); err == nil {
+		t.Fatal("expected error for unsupported protocol version")
+	}
+}
+
+func TestDecodeGossipPayload_FieldsCorrect(t *testing.T) {
+	message, _ := buildGossip("node-1", "127.0.0.1:8001", 8, "news", "important data", "node-1")
+	payload, err := decodeGossipPayload(message)
+	if err != nil {
+		t.Fatalf("decodeGossipPayload: %v", err)
+	}
+	if payload.Topic != "news" {
+		t.Fatalf("Topic: want news, got %s", payload.Topic)
+	}
+	if payload.Data != "important data" {
+		t.Fatalf("Data: want 'important data', got %s", payload.Data)
+	}
+}
+
+func TestDecodePingPayload_FieldsCorrect(t *testing.T) {
+	message, _ := buildPing("node-1", "127.0.0.1:8001", "ping-identifier-42", 7)
+	payload, err := decodePingPayload(message)
+	if err != nil {
+		t.Fatalf("decodePingPayload: %v", err)
+	}
+	if payload.PingIdentifier != "ping-identifier-42" {
+		t.Fatalf("PingIdentifier: want ping-identifier-42, got %s", payload.PingIdentifier)
+	}
+	if payload.Sequence != 7 {
+		t.Fatalf("Sequence: want 7, got %d", payload.Sequence)
+	}
+}
+
+func TestDecodePongPayload_FieldsCorrect(t *testing.T) {
+	message, _ := buildPong("node-1", "127.0.0.1:8001", "ping-identifier-42", 7)
+	payload, err := decodePongPayload(message)
+	if err != nil {
+		t.Fatalf("decodePongPayload: %v", err)
+	}
+	if payload.PingIdentifier != "ping-identifier-42" {
+		t.Fatalf("PingIdentifier: want ping-identifier-42, got %s", payload.PingIdentifier)
+	}
+	if payload.Sequence != 7 {
+		t.Fatalf("Sequence: want 7, got %d", payload.Sequence)
+	}
+}
+
+func TestDecodeHelloPayload_HasCapabilities(t *testing.T) {
+	message, _ := buildHello("node-1", "127.0.0.1:8001", nil)
+	payload, err := decodeHelloPayload(message)
+	if err != nil {
+		t.Fatalf("decodeHelloPayload: %v", err)
+	}
+	if len(payload.Capabilities) == 0 {
+		t.Fatal("expected non-empty capabilities list")
+	}
+}
+
+func TestDecodeIHavePayload_FieldsCorrect(t *testing.T) {
+	ids := []string{"message-id-1", "message-id-2", "message-id-3"}
+	message, _ := buildIHave("node-1", "127.0.0.1:8001", ids, 32)
+	payload, err := decodeIHavePayload(message)
+	if err != nil {
+		t.Fatalf("decodeIHavePayload: %v", err)
+	}
+	if len(payload.MessageIDs) != 3 {
+		t.Fatalf("MessageIDs count: want 3, got %d", len(payload.MessageIDs))
+	}
+	if payload.MaxIDs != 32 {
+		t.Fatalf("MaxIDs: want 32, got %d", payload.MaxIDs)
+	}
+}
+
+func TestDecodeIWantPayload_FieldsCorrect(t *testing.T) {
+	ids := []string{"message-id-1", "message-id-2"}
+	message, _ := buildIWant("node-1", "127.0.0.1:8001", ids)
+	payload, err := decodeIWantPayload(message)
+	if err != nil {
+		t.Fatalf("decodeIWantPayload: %v", err)
+	}
+	if len(payload.MessageIDs) != 2 {
+		t.Fatalf("MessageIDs count: want 2, got %d", len(payload.MessageIDs))
+	}
+}
+
+func TestDecodePeersListPayload_FieldsCorrect(t *testing.T) {
+	peers := []PeerInfo{
+		{NodeID: "node-1", Address: "127.0.0.1:8001"},
+		{NodeID: "node-2", Address: "127.0.0.1:8002"},
+	}
+	message, _ := buildPeersList("node-0", "127.0.0.1:8000", peers)
+	payload, err := decodePeersListPayload(message)
+	if err != nil {
+		t.Fatalf("decodePeersListPayload: %v", err)
+	}
+	if len(payload.Peers) != 2 {
+		t.Fatalf("Peers count: want 2, got %d", len(payload.Peers))
+	}
+}
+
+func TestSplitHostPort_ValidAddress(t *testing.T) {
+	host, port, err := splitHostPort("127.0.0.1:8001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "127.0.0.1" {
+		t.Fatalf("host: want 127.0.0.1, got %s", host)
+	}
+	if port != "8001" {
+		t.Fatalf("port: want 8001, got %s", port)
+	}
+}
+
+func TestSplitHostPort_MissingColon(t *testing.T) {
+	if _, _, err := splitHostPort("noport"); err == nil {
+		t.Fatal("expected error for address without colon")
+	}
+}
+
+func TestForwardedMessage_PreservesMessageID(t *testing.T) {
+	original, _ := buildGossip("node-1", "127.0.0.1:8001", 8, "topic", "data", "node-1")
+	forwarded := *original
+	forwarded.TimeToLive = original.TimeToLive - 1
+	if forwarded.MessageID != original.MessageID {
+		t.Fatal("MessageID must not change when a message is forwarded")
+	}
+	if forwarded.TimeToLive != original.TimeToLive-1 {
+		t.Fatal("TimeToLive was not decremented correctly")
+	}
+}
