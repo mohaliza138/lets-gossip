@@ -14,10 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check for Go files
+        id: check_go
+        run: echo "has_go=$(find . -name '*.go' | head -1 | wc -l)" >> $GITHUB_OUTPUT
+
       - name: Set up Go
+        if: steps.check_go.outputs.has_go == '1'
         uses: actions/setup-go@v5
         with:
           go-version: '1.22.5'
 
       - name: Run tests
+        if: steps.check_go.outputs.has_go == '1'
         run: go test .
