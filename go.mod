@@ -1,1 +1,3 @@
-module letsgossipgo 1.22.5
+module letsgossip
+
+go 1.22.5
