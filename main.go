@@ -11,24 +11,24 @@ import (
 	"time"
 )
 
-// Config holds all tunable parameters for a node. Values are set once at
-// startup from CLI flags and are treated as read-only for the node's lifetime.
+// Config holds all the tunable settings for a node. Everything here comes from
+// CLI flags at startup and stays read-only for the rest of the node's lifetime.
 type Config struct {
 	host          string
 	port          int
-	bootstrap     string // seed node "host:port"; empty string means this node IS the seed
+	bootstrap     string // the seed node to connect to on startup ("host:port"); leave empty if this node is the seed
 	fanout        int
 	timeToLive    int
 	peerLimit     int
-	pingInterval  float64 // seconds between PING rounds
-	peerTimeout   float64 // seconds of silence before a peer is considered dead
+	pingInterval  float64 // how often (in seconds) we send PING rounds
+	peerTimeout   float64 // how long (in seconds) a peer can go silent before we consider them dead
 	randomSeed    int64
 	hybrid        bool
-	pullInterval  float64 // seconds between IHAVE broadcasts (Phase 4a)
-	maxIHaveIDs   int     // maximum message IDs per IHAVE (Phase 4a)
-	powEnabled    bool    // enable Proof-of-Work on HELLO (Phase 4b)
-	powDifficulty int     // leading zero hex characters required (Phase 4b)
-	quiet         bool    // suppress log output to console
+	pullInterval  float64 // how often (in seconds) we broadcast IHAVE messages
+	maxIHaveIDs   int     // cap on how many message IDs we include in a single IHAVE
+	powEnabled    bool    // whether to require Proof-of-Work on HELLO messages
+	powDifficulty int     // how many leading zero hex characters the PoW digest must have
+	quiet         bool    // if true, log output stays in the file and off the console
 }
 
 func (config *Config) selfAddress() string {
@@ -47,16 +47,16 @@ func parseConfig() *Config {
 	flag.Float64Var(&config.peerTimeout, "peer-timeout", 3.0, "Seconds of silence before a peer is evicted")
 	flag.Int64Var(&config.randomSeed, "seed", 42, "Random number generator seed for reproducibility")
 	flag.BoolVar(&config.hybrid, "hybrid", false, "Enable Hybrid Push-Pull")
-	flag.Float64Var(&config.pullInterval, "pull-interval", 0.5, "Seconds between IHAVE broadcasts ")
+	flag.Float64Var(&config.pullInterval, "pull-interval", 0.5, "Seconds between IHAVE broadcasts")
 	flag.IntVar(&config.maxIHaveIDs, "max-ihave-ids", 32, "Maximum message IDs per IHAVE message")
-	flag.BoolVar(&config.powEnabled, "pow", false, "Enable Proof-of-Work on HELLO messages (Phase 4b)")
-	flag.IntVar(&config.powDifficulty, "pow-k", 4, "Proof-of-Work difficulty: leading zero hex characters required (Phase 4b)")
+	flag.BoolVar(&config.powEnabled, "pow", false, "Enable Proof-of-Work on HELLO messages")
+	flag.IntVar(&config.powDifficulty, "pow-k", 4, "Proof-of-Work difficulty: leading zero hex characters required")
 	flag.BoolVar(&config.quiet, "quiet", true, "Suppress log output to console")
 	flag.Parse()
 	return config
 }
 
-// Node is the central structure holding all runtime state for one gossip node.
+// Node is the central structure that ties everything together for a single gossip node.
 type Node struct {
 	config            *Config
 	nodeID            string
@@ -66,8 +66,8 @@ type Node struct {
 	connection        *net.UDPConn
 	proofOfWorkResult *ProofOfWorkResult
 	pingMu            sync.Mutex
-	pingSentAt        map[string]time.Time // ping identifier → time the PING was sent (for round-trip calculation)
-	pingSequence      map[string]int       // peer ID → current PING sequence counter
+	pingSentAt        map[string]time.Time // ping identifier → when we sent it, used to calculate round-trip time
+	pingSequence      map[string]int       // peer ID → current sequence number for outgoing pings
 }
 
 func newNode(config *Config) *Node {
@@ -91,7 +91,7 @@ func newNode(config *Config) *Node {
 		pingSequence: make(map[string]int),
 	}
 
-	// Phase 4b — mine Proof-of-Work once before sending the first HELLO
+	// If PoW is enabled, we mine a valid nonce upfront so it's ready to include in our first HELLO
 	if config.powEnabled {
 		fmt.Printf("[Proof-of-Work] Mining nonce with difficulty k=%d…\n", config.powDifficulty)
 		result := mineProofOfWork(nodeID, config.powDifficulty)
@@ -144,7 +144,7 @@ func (node *Node) run() {
 
 	fmt.Printf("[%s] Node %s ready. Type a message and press Enter to gossip.\n",
 		node.config.selfAddress(), node.nodeID[:8])
-	node.receiveLoop() // blocks until process exits
+	node.receiveLoop() // blocks until the process exits
 }
 
 func (node *Node) receiveLoop() {
@@ -169,7 +169,7 @@ func (node *Node) dispatch(datagram []byte) {
 	}
 	node.logger.messageReceived(message.MessageType, message.SenderAddress)
 
-	// Update liveness timestamp for any known peer that sends us a message
+	// Any message from a known peer counts as a sign of life — refresh their timestamp
 	if node.peerManager.has(message.SenderID) {
 		node.peerManager.touch(message.SenderID)
 	}
@@ -205,7 +205,7 @@ func (node *Node) handleHello(message *Message) {
 		return
 	}
 
-	// Phase 4b — verify Proof-of-Work before admitting the peer
+	// If PoW is required, reject any peer that doesn't include a valid proof
 	if node.config.powEnabled {
 		if payload.ProofOfWork == nil {
 			node.logger.proofOfWorkRejected(message.SenderID, "missing proof-of-work field")
@@ -225,7 +225,7 @@ func (node *Node) handleHello(message *Message) {
 
 	if node.peerManager.add(message.SenderID, message.SenderAddress) {
 		node.logger.peerAdded(message.SenderID, message.SenderAddress)
-		node.sendHello(message.SenderAddress) // mutual registration
+		node.sendHello(message.SenderAddress) // say hello back so they add us too
 	}
 }
 
@@ -251,7 +251,7 @@ func (node *Node) handlePeersList(message *Message) {
 			continue
 		}
 		if !node.peerManager.has(peerInfo.NodeID) && !node.peerManager.isFull() {
-			node.sendHello(peerInfo.Address) // triggers mutual registration
+			node.sendHello(peerInfo.Address) // introduce ourselves; they'll add us when they reply
 		}
 	}
 }
@@ -287,7 +287,7 @@ func (node *Node) maintenanceLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// 1. Send PING to every known peer
+		// Ping every peer we know about so we can tell who's still alive
 		node.pingMu.Lock()
 		for _, peer := range node.peerManager.all() {
 			pingIdentifier := newUUID()
@@ -303,13 +303,13 @@ func (node *Node) maintenanceLoop() {
 		}
 		node.pingMu.Unlock()
 
-		// 2. Evict peers that have missed too many consecutive pings
+		// Drop any peers that have gone quiet for too long or missed too many pings
 		for _, peer := range node.peerManager.stale(node.config.peerTimeout, 3) {
 			node.peerManager.remove(peer.NodeID)
 			node.logger.peerEvicted(peer.NodeID, "timeout and missed pings")
 		}
 
-		// 3. Replenish PeerList if running below half capacity
+		// If our peer count drops below half capacity, ask someone for more peers
 		threshold := node.config.peerLimit / 2
 		if threshold < 1 {
 			threshold = 1
@@ -330,6 +330,7 @@ func (node *Node) bootstrap() {
 	}
 	node.logger.info("bootstrap started", "seed", node.config.bootstrap)
 
+	// Try up to 3 times to reach the seed node before giving up
 	for attempt := 1; attempt <= 3; attempt++ {
 		node.logger.info("sending HELLO to seed node", "attempt", attempt)
 		node.sendHello(node.config.bootstrap)

@@ -6,8 +6,9 @@ import (
 	"sync"
 )
 
-// Engine handles all gossip message logic: deduplication via the SeenSet,
-// TimeToLive enforcement, fanout forwarding, and message origination.
+// Engine is the heart of the gossip system. It keeps track of which messages
+// we've already seen, enforces time-to-live limits, forwards messages to peers,
+// and lets this node kick off new gossip of its own.
 type Engine struct {
 	mu                sync.Mutex
 	nodeID            string
@@ -18,8 +19,8 @@ type Engine struct {
 	sendBytes         func([]byte, string)
 	logger            *Logger
 	random            *rand.Rand
-	seenMessageIDs    map[string]struct{} // message ID → seen (deduplication set)
-	messageStore      map[string]*Message // message ID → full message (for IWANT replies)
+	seenMessageIDs    map[string]struct{} // tracks which message IDs we've already processed
+	messageStore      map[string]*Message // holds full messages so we can respond to IWANT requests
 }
 
 func newEngine(
@@ -44,39 +45,39 @@ func newEngine(
 	}
 }
 
-// onReceive processes an incoming GOSSIP message (protocol design §4.3).
+// onReceive handles an incoming GOSSIP message from another peer.
 func (engine *Engine) onReceive(message *Message) {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 
-	// Step 1 — duplicate check
+	// Drop it if we've seen this message before — no point processing it twice
 	if _, alreadySeen := engine.seenMessageIDs[message.MessageID]; alreadySeen {
 		engine.logger.gossipDuplicate(message.MessageID)
 		return
 	}
 
-	// Steps 2 & 4 — record in SeenSet and store full message
+	// Remember this message so we don't process it again, and hang on to the full content
 	engine.seenMessageIDs[message.MessageID] = struct{}{}
 	engine.messageStore[message.MessageID] = message
 
-	// Step 3 — decode payload for logging
+	// Unpack the payload so we can log what actually arrived
 	gossipPayload, err := decodeGossipPayload(message)
 	if err != nil {
 		engine.logger.warn("could not decode gossip payload", "error", err.Error())
 		return
 	}
 	engine.logger.gossipReceived(message.MessageID, gossipPayload.OriginID, gossipPayload.Topic)
-	
-	// Print gossip message to terminal
+
+	// Show the message in the terminal so it's easy to follow along
 	fmt.Printf("[%s] Received GOSSIP from %s: %s\n", engine.selfAddress, message.SenderAddress, gossipPayload.Data)
 
-	// Step 5 — TimeToLive check
+	// If the TTL has run out, this message stops here — don't forward it
 	if message.TimeToLive <= 0 {
 		engine.logger.timeToLiveExhausted(message.MessageID)
 		return
 	}
 
-	// Step 6 — build forwarded copy with decremented TimeToLive
+	// Build a copy of the message with the TTL ticked down by one before forwarding
 	forwarded := *message
 	forwarded.TimeToLive = message.TimeToLive - 1
 	raw, err := encodeMessage(&forwarded)
@@ -85,15 +86,15 @@ func (engine *Engine) onReceive(message *Message) {
 		return
 	}
 
-	// Step 7 — select fanout peers, excluding the sender
+	// Pick a random set of peers to forward to, skipping whoever sent it to us
 	for _, peer := range engine.peerManager.randomSample(engine.fanout, message.SenderID) {
 		engine.sendBytes(raw, peer.Address)
 		engine.logger.gossipForwarded(message.MessageID, peer.NodeID, forwarded.TimeToLive)
 	}
 }
 
-// originate creates and sends a brand-new GOSSIP message from this node.
-// Returns the new message ID.
+// originate creates a brand-new GOSSIP message from this node and sends it out.
+// Returns the new message's ID.
 func (engine *Engine) originate(topic, data string) string {
 	message, err := buildGossip(
 		engine.nodeID, engine.selfAddress,
@@ -105,6 +106,7 @@ func (engine *Engine) originate(topic, data string) string {
 		return ""
 	}
 
+	// Mark our own message as seen so we don't accidentally process it if it loops back
 	engine.mu.Lock()
 	engine.seenMessageIDs[message.MessageID] = struct{}{}
 	engine.messageStore[message.MessageID] = message
@@ -124,7 +126,7 @@ func (engine *Engine) originate(topic, data string) string {
 	return message.MessageID
 }
 
-// recentMessageIDs returns up to maximum randomly selected message IDs from the SeenSet.
+// recentMessageIDs returns a random selection of up to `maximum` message IDs from everything we've seen.
 func (engine *Engine) recentMessageIDs(maximum int) []string {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -139,7 +141,7 @@ func (engine *Engine) recentMessageIDs(maximum int) []string {
 	return ids
 }
 
-// missingMessageIDs returns which of the given IDs are not in the SeenSet.
+// missingMessageIDs filters the given list and returns only the IDs we haven't seen yet.
 func (engine *Engine) missingMessageIDs(ids []string) []string {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
@@ -152,14 +154,14 @@ func (engine *Engine) missingMessageIDs(ids []string) []string {
 	return missing
 }
 
-// getStoredMessage returns the full stored GOSSIP for a message ID, or nil if not found.
+// getStoredMessage looks up a full GOSSIP message by ID. Returns nil if we don't have it.
 func (engine *Engine) getStoredMessage(messageID string) *Message {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 	return engine.messageStore[messageID]
 }
 
-// hasSeen reports whether a message ID has already been processed.
+// hasSeen checks whether we've already processed a message with the given ID.
 func (engine *Engine) hasSeen(messageID string) bool {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()

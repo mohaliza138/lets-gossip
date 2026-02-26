@@ -6,16 +6,16 @@ import (
 	"time"
 )
 
-// PeerEntry represents one known peer in the PeerList.
+// PeerEntry holds everything we know about a single peer.
 type PeerEntry struct {
 	NodeID             string
 	Address            string
 	LastSeenMS         int64
 	PendingPings       int
-	LastPingIdentifier string // identifier of the most recently sent unanswered PING
+	LastPingIdentifier string // the identifier of the last PING we sent that hasn't been answered yet
 }
 
-// PeerManager manages the bounded PeerList in a thread-safe manner.
+// PeerManager keeps track of all known peers in a thread-safe, bounded list.
 type PeerManager struct {
 	mu     sync.RWMutex
 	selfID string
@@ -33,7 +33,7 @@ func newPeerManager(selfID string, limit int, random *rand.Rand) *PeerManager {
 	}
 }
 
-// add inserts or refreshes a peer. Returns true if a new entry was created.
+// add registers a new peer or refreshes an existing one. Returns true if this is a brand-new entry.
 func (manager *PeerManager) add(nodeID, address string) bool {
 	if nodeID == manager.selfID {
 		return false
@@ -107,7 +107,8 @@ func (manager *PeerManager) recordPingSent(nodeID, pingIdentifier string) {
 	manager.mu.Unlock()
 }
 
-// recordPong resets pending pings if the ping identifier matches. Returns true on match.
+// recordPong clears the pending ping count when a peer replies with a matching identifier.
+// Returns true if the pong matched an outstanding ping.
 func (manager *PeerManager) recordPong(nodeID, pingIdentifier string) bool {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -120,8 +121,8 @@ func (manager *PeerManager) recordPong(nodeID, pingIdentifier string) bool {
 	return true
 }
 
-// stale returns peers that have exceeded timeoutSeconds AND have at least
-// minimumPendingPings unanswered pings.
+// stale returns any peers that have both been silent longer than timeoutSeconds
+// and have at least minimumPendingPings unanswered pings outstanding.
 func (manager *PeerManager) stale(timeoutSeconds float64, minimumPendingPings int) []*PeerEntry {
 	cutoff := time.Now().UnixMilli() - int64(timeoutSeconds*1000)
 	manager.mu.RLock()
@@ -135,7 +136,7 @@ func (manager *PeerManager) stale(timeoutSeconds float64, minimumPendingPings in
 	return result
 }
 
-// all returns a snapshot of every peer entry.
+// all returns a snapshot of every peer we currently know about.
 func (manager *PeerManager) all() []*PeerEntry {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
@@ -146,7 +147,7 @@ func (manager *PeerManager) all() []*PeerEntry {
 	return result
 }
 
-// randomSample returns up to count random peers, excluding the given node IDs.
+// randomSample picks up to count peers at random, skipping any node IDs passed as exclusions.
 func (manager *PeerManager) randomSample(count int, excludeIDs ...string) []*PeerEntry {
 	excluded := make(map[string]bool, len(excludeIDs))
 	for _, id := range excludeIDs {
@@ -173,7 +174,8 @@ func (manager *PeerManager) randomSample(count int, excludeIDs ...string) []*Pee
 	return candidates[:count]
 }
 
-// peerInfoList returns a shuffled slice of PeerInfo for PEERS_LIST payloads.
+// peerInfoList returns a shuffled list of peers suitable for sharing in a PEERS_LIST message,
+// excluding the node that asked for it.
 func (manager *PeerManager) peerInfoList(excludeID string, maxPeers int) []PeerInfo {
 	manager.mu.RLock()
 	result := make([]PeerInfo, 0, len(manager.peers))
@@ -194,8 +196,9 @@ func (manager *PeerManager) peerInfoList(excludeID string, maxPeers int) []PeerI
 	return result[:maxPeers]
 }
 
-// evictOne removes the least-responsive peer (most pending pings; ties broken by oldest last seen).
-// Caller must hold the write lock.
+// evictOne removes the least-responsive peer to make room for a new one.
+// It targets whoever has the most unanswered pings, breaking ties by picking
+// the one we heard from least recently. Caller must hold the write lock.
 func (manager *PeerManager) evictOne() {
 	var worst *PeerEntry
 	for _, entry := range manager.peers {

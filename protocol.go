@@ -25,7 +25,7 @@ var validMessageTypes = map[string]bool{
 
 const protocolVersion = 1
 
-// Message is the outer envelope for every UDP datagram in the protocol.
+// Message is the outer envelope that wraps every UDP datagram we send or receive.
 type Message struct {
 	Version       int             `json:"version"`
 	MessageID     string          `json:"message_id"`
@@ -88,6 +88,8 @@ type IWantPayload struct {
 	MessageIDs []string `json:"message_ids"`
 }
 
+// newMessage is the shared constructor for all message types. It handles the
+// envelope fields so individual builders only need to worry about their payload.
 func newMessage(messageType, senderID, senderAddress string, timeToLive int, payload any) (*Message, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -153,6 +155,8 @@ func encodeMessage(message *Message) ([]byte, error) {
 	return json.Marshal(message)
 }
 
+// decodeMessage deserializes a raw UDP datagram and validates that the envelope
+// looks sane before handing it back to the caller.
 func decodeMessage(data []byte) (*Message, error) {
 	var message Message
 	if err := json.Unmarshal(data, &message); err != nil {
@@ -211,6 +215,7 @@ func decodeIWantPayload(message *Message) (IWantPayload, error) {
 	return payload, json.Unmarshal(message.Payload, &payload)
 }
 
+// newUUID generates a random RFC 4122 v4 UUID.
 func newUUID() string {
 	var bytes [16]byte
 	_, _ = rand.Read(bytes[:])
@@ -220,6 +225,8 @@ func newUUID() string {
 		bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
 }
 
+// splitHostPort pulls apart a "host:port" string without relying on the standard
+// library, since we need to handle plain IPv4 addresses without brackets.
 func splitHostPort(address string) (host string, port string, err error) {
 	for i := len(address) - 1; i >= 0; i-- {
 		if address[i] == ':' {

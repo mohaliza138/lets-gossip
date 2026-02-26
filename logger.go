@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// Logger writes one JSON line per event to both stdout and a per-node log file.
+// Logger writes structured JSON log lines to both stdout and a dedicated file for each node.
 type Logger struct {
-	mu             sync.Mutex
-	abbreviatedID  string // first 8 characters of the node ID, used in every log record
-	address        string
-	fileHandle     *os.File
-	quiet          bool
+	mu            sync.Mutex
+	abbreviatedID string // first 8 characters of the node ID, used in every log record
+	address       string
+	fileHandle    *os.File
+	quiet         bool
 }
 
 func newLogger(nodeID, address string, quiet bool) (*Logger, error) {
@@ -59,7 +59,7 @@ func (logger *Logger) emit(event string, fields map[string]any) {
 
 func (logger *Logger) close() { logger.fileHandle.Close() }
 
-// abbreviateID returns the first 8 characters of a node ID for compact log output.
+// abbreviateID trims a node ID down to its first 8 characters to keep log output readable.
 func abbreviateID(nodeID string) string {
 	if len(nodeID) > 8 {
 		return nodeID[:8]
@@ -95,8 +95,8 @@ func (logger *Logger) gossipReceived(messageID, originID, topic string) {
 
 func (logger *Logger) gossipForwarded(messageID, toPeerID string, timeToLive int) {
 	logger.emit("gossip_forwarded", map[string]any{
-		"message_id":  messageID,
-		"to_peer_id":  abbreviateID(toPeerID),
+		"message_id":   messageID,
+		"to_peer_id":   abbreviateID(toPeerID),
 		"time_to_live": timeToLive,
 	})
 }
@@ -125,8 +125,8 @@ func (logger *Logger) pingSent(peerID string, sequence int) {
 
 func (logger *Logger) pongReceived(peerID string, roundTripMS int64) {
 	logger.emit("pong_received", map[string]any{
-		"peer_id":        abbreviateID(peerID),
-		"round_trip_ms":  roundTripMS,
+		"peer_id":       abbreviateID(peerID),
+		"round_trip_ms": roundTripMS,
 	})
 }
 
@@ -139,15 +139,15 @@ func (logger *Logger) messageSent(messageType, toAddress string) {
 
 func (logger *Logger) messageReceived(messageType, fromAddress string) {
 	logger.emit("message_received", map[string]any{
-		"message_type":  messageType,
-		"from_address":  fromAddress,
+		"message_type": messageType,
+		"from_address": fromAddress,
 	})
 }
 
 func (logger *Logger) proofOfWorkMined(nonce int64, digestHex string, durationMS int64, powK int) {
 	logger.emit("proof_of_work_mined", map[string]any{
 		"nonce":       nonce,
-		"digest_hex":  digestHex[:16] + "…",
+		"digest_hex":  digestHex[:16] + "…", // truncated for brevity
 		"duration_ms": durationMS,
 		"pow_k":       powK,
 	})
@@ -172,6 +172,8 @@ func (logger *Logger) info(text string, keyValues ...any) {
 	logger.emit("info", buildFieldMap(text, keyValues...))
 }
 
+// buildFieldMap turns a message string and optional key-value pairs into a map
+// that can be passed straight to emit.
 func buildFieldMap(message string, keyValues ...any) map[string]any {
 	fields := map[string]any{"message": message}
 	for i := 0; i+1 < len(keyValues); i += 2 {

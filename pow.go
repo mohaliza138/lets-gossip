@@ -7,15 +7,15 @@ import (
 	"time"
 )
 
-// ProofOfWorkResult holds the output of a successful proof-of-work mining operation.
+// ProofOfWorkResult holds everything we got out of a successful mining run.
 type ProofOfWorkResult struct {
 	Nonce      int64
 	DigestHex  string
 	DurationMS int64
 }
 
-// mineProofOfWork finds a nonce such that
-// SHA256(nodeID + "|" + nonce) starts with `difficulty` leading zero hex characters.
+// mineProofOfWork keeps hashing SHA256(nodeID + "|" + nonce) with an incrementing nonce
+// until the result starts with the required number of leading zero hex characters.
 func mineProofOfWork(nodeID string, difficulty int) ProofOfWorkResult {
 	requiredPrefix := strings.Repeat("0", difficulty)
 	startTime := time.Now()
@@ -33,8 +33,8 @@ func mineProofOfWork(nodeID string, difficulty int) ProofOfWorkResult {
 	}
 }
 
-// verifyProofOfWork checks a proof-of-work solution.
-// Returns (true, "") on success or (false, reason) on failure.
+// verifyProofOfWork checks whether a peer's submitted proof-of-work solution is valid.
+// Returns (true, "") if everything checks out, or (false, reason) if something's wrong.
 func verifyProofOfWork(nodeID string, nonce int64, digestHex string, difficulty int) (bool, string) {
 	if nonce < 0 {
 		return false, "nonce must be non-negative"
@@ -49,6 +49,7 @@ func verifyProofOfWork(nodeID string, nonce int64, digestHex string, difficulty 
 	return true, ""
 }
 
+// computeProofOfWorkDigest produces the SHA256 hash of "nodeID|nonce" as a hex string.
 func computeProofOfWorkDigest(nodeID string, nonce int64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d", nodeID, nonce)))
 	return fmt.Sprintf("%x", sum)

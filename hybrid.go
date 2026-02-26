@@ -2,9 +2,10 @@ package main
 
 import "time"
 
-// runHybridPullLoop periodically broadcasts IHAVE messages to random peers,
-// advertising which gossip messages this node has seen.
-// It should be started in its own goroutine.
+// runHybridPullLoop runs in the background and periodically tells a handful of
+// random peers which messages we know about. This gives nodes a chance to catch
+// up on anything they might have missed through normal gossip forwarding.
+// Meant to be launched as a goroutine.
 func runHybridPullLoop(node *Node) {
 	ticker := time.NewTicker(time.Duration(node.config.pullInterval * float64(time.Second)))
 	defer ticker.Stop()
@@ -28,9 +29,9 @@ func runHybridPullLoop(node *Node) {
 	}
 }
 
-// handleIHave processes an incoming IHAVE message.
-// It determines which advertised message IDs this node is missing
-// and sends an IWANT reply requesting those messages.
+// handleIHave is called when a peer tells us which messages they have.
+// We compare their list against our own and, if there's anything we're missing,
+// we send back an IWANT asking them to send those messages over.
 func (node *Node) handleIHave(message *Message) {
 	payload, err := decodeIHavePayload(message)
 	if err != nil || len(payload.MessageIDs) == 0 {
@@ -47,9 +48,8 @@ func (node *Node) handleIHave(message *Message) {
 	node.sendMessage(request, message.SenderAddress)
 }
 
-// handleIWant processes an incoming IWANT message.
-// For each requested message ID that this node has stored, it sends
-// the full GOSSIP message back to the requester.
+// handleIWant is called when a peer asks us for specific messages they don't have.
+// For each ID they requested, we look it up in our store and send the full message back.
 func (node *Node) handleIWant(message *Message) {
 	payload, err := decodeIWantPayload(message)
 	if err != nil {
