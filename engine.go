@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 )
@@ -65,6 +66,9 @@ func (engine *Engine) onReceive(message *Message) {
 		return
 	}
 	engine.logger.gossipReceived(message.MessageID, gossipPayload.OriginID, gossipPayload.Topic)
+	
+	// Print gossip message to terminal
+	fmt.Printf("[%s] Received GOSSIP from %s: %s\n", engine.selfAddress, message.SenderAddress, gossipPayload.Data)
 
 	// Step 5 — TimeToLive check
 	if message.TimeToLive <= 0 {

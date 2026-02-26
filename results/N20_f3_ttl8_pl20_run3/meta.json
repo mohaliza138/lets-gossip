@@ -1,0 +1,9 @@
+{
+  "n": 20,
+  "fanout": 3,
+  "ttl": 8,
+  "peer_limit": 20,
+  "seed": 3,
+  "base_port": 9000,
+  "gossip_msg": "SIM_TEST_MESSAGE"
+}
