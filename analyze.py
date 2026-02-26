@@ -129,6 +129,7 @@ def parse_experiment(experiment_dir):
         "ttl": meta["ttl"],
         "peer_limit": meta["peer_limit"],
         "seed": meta["seed"],
+        "hybrid": meta.get("hybrid", False),
         "n_nodes_actual": n_nodes,
         "coverage_pct": coverage_pct,
         "convergence_time_ms": convergence_ms,
@@ -275,6 +276,61 @@ def plot_multiline_vs_n(results, param_key, param_label, output_dir):
     print(f"  saved {path}")
 
 
+def plot_push_vs_hybrid(results, output_dir):
+    """Side-by-side bar chart comparing Push-only vs Hybrid for each N."""
+    push   = [r for r in results if not r["hybrid"]]
+    hybrid = [r for r in results if r["hybrid"]]
+    if not push or not hybrid:
+        return
+
+    push_by_n   = _group_by(push,   "n")
+    hybrid_by_n = _group_by(hybrid, "n")
+    ns = sorted(set(push_by_n) & set(hybrid_by_n))
+    if not ns:
+        return
+
+    x = np.arange(len(ns))
+    w = 0.35
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    for idx, (metric, ylabel) in enumerate([("conv", "Convergence Time (ms)"),
+                                             ("over", "Message Overhead")]):
+        ax = axes[idx]
+        p_mean = [np.mean(push_by_n[n][metric])   if push_by_n[n][metric]   else 0 for n in ns]
+        p_std  = [np.std(push_by_n[n][metric])    if push_by_n[n][metric]   else 0 for n in ns]
+        h_mean = [np.mean(hybrid_by_n[n][metric]) if hybrid_by_n[n][metric] else 0 for n in ns]
+        h_std  = [np.std(hybrid_by_n[n][metric])  if hybrid_by_n[n][metric] else 0 for n in ns]
+
+        ax.bar(x - w/2, p_mean, w, yerr=p_std, capsize=4, label="Push-only",  color="#4C72B0")
+        ax.bar(x + w/2, h_mean, w, yerr=h_std, capsize=4, label="Hybrid",     color="#55A868")
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(n) for n in ns])
+        ax.set_xlabel("Network Size (N)", fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.set_title(f"{ylabel.split('(')[0].strip()} — Push vs Hybrid", fontsize=13)
+        ax.legend()
+        ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    path = os.path.join(output_dir, "push_vs_hybrid.png")
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"  saved {path}")
+
+    # Print mean ± std summary
+    print("\n  Push-only vs Hybrid summary (mean ± std):")
+    print(f"  {'N':>4}  {'Mode':<8}  {'Conv (ms)':>14}  {'Overhead':>14}")
+    print(f"  {'-'*48}")
+    for n in ns:
+        for label, by_n in [("Push", push_by_n), ("Hybrid", hybrid_by_n)]:
+            c = by_n[n]["conv"]
+            o = by_n[n]["over"]
+            c_str = f"{np.mean(c):.1f} ± {np.std(c):.1f}" if c else "N/A"
+            o_str = f"{np.mean(o):.1f} ± {np.std(o):.1f}"
+            print(f"  {n:>4}  {label:<8}  {c_str:>14}  {o_str:>14}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -292,12 +348,13 @@ def main():
         sys.exit(1)
 
     # ---- summary table ----
-    hdr = f"{'N':>4} {'Fan':>4} {'TTL':>4} {'PL':>4} {'Seed':>4} {'Nodes':>5} {'Cov%':>6} {'Conv(ms)':>9} {'Overhead':>9}"
+    hdr = f"{'N':>4} {'Fan':>4} {'TTL':>4} {'PL':>4} {'Mode':<7} {'Seed':>4} {'Nodes':>5} {'Cov%':>6} {'Conv(ms)':>9} {'Overhead':>9}"
     print(f"\n{'='*len(hdr)}\n{hdr}\n{'-'*len(hdr)}")
-    for r in sorted(results, key=lambda x: (x["n"], x["fanout"], x["ttl"], x["peer_limit"], x["seed"])):
+    for r in sorted(results, key=lambda x: (x["n"], x["hybrid"], x["fanout"], x["ttl"], x["peer_limit"], x["seed"])):
         conv = str(r["convergence_time_ms"]) if r["convergence_time_ms"] is not None else "N/A"
+        mode = "hybrid" if r["hybrid"] else "push"
         print(f"{r['n']:>4} {r['fanout']:>4} {r['ttl']:>4} {r['peer_limit']:>4} "
-              f"{r['seed']:>4} {r['n_nodes_actual']:>5} {r['coverage_pct']:>5.1f}% "
+              f"{mode:<7} {r['seed']:>4} {r['n_nodes_actual']:>5} {r['coverage_pct']:>5.1f}% "
               f"{conv:>9} {r['message_overhead']:>9}")
     print("=" * len(hdr))
 
@@ -305,19 +362,24 @@ def main():
     os.makedirs(args.plots, exist_ok=True)
     print("\nGenerating plots …")
 
-    # 1. Main plot — metrics vs N (uses default fanout/ttl/pl if available)
-    default_results = [
+    # 1. Main plot — metrics vs N (push-only with default fanout/ttl/pl)
+    default_push = [
         r for r in results
         if r["fanout"] == 3 and r["ttl"] == 8 and r["peer_limit"] == 20
+        and not r["hybrid"]
     ]
-    plot_vs_n(default_results or results, args.plots)
+    plot_vs_n(default_push or [r for r in results if not r["hybrid"]] or results,
+              args.plots)
 
-    # 2. Parameter-effect plots (only if more than one value exists)
+    # 2. Push-only vs Hybrid comparison
+    plot_push_vs_hybrid(results, args.plots)
+
+    # 3. Parameter-effect plots (only if more than one value exists)
     plot_param_effect(results, "Fanout", "fanout", args.plots)
     plot_param_effect(results, "TTL", "ttl", args.plots)
     plot_param_effect(results, "Peer Limit", "peer_limit", args.plots)
 
-    # 3. Multi-line plots for sweep mode
+    # 4. Multi-line plots for sweep mode
     plot_multiline_vs_n(results, "fanout", "Fanout", args.plots)
     plot_multiline_vs_n(results, "ttl", "TTL", args.plots)
     plot_multiline_vs_n(results, "peer_limit", "PeerLimit", args.plots)
@@ -325,13 +387,13 @@ def main():
     # ---- CSV export ----
     csv_path = os.path.join(args.plots, "results.csv")
     with open(csv_path, "w") as f:
-        f.write("n,fanout,ttl,peer_limit,seed,n_nodes_actual,coverage_pct,"
-                "convergence_time_ms,message_overhead\n")
+        f.write("n,fanout,ttl,peer_limit,hybrid,seed,n_nodes_actual,"
+                "coverage_pct,convergence_time_ms,message_overhead\n")
         for r in results:
             conv = r["convergence_time_ms"] if r["convergence_time_ms"] is not None else ""
             f.write(f"{r['n']},{r['fanout']},{r['ttl']},{r['peer_limit']},"
-                    f"{r['seed']},{r['n_nodes_actual']},{r['coverage_pct']:.1f},"
-                    f"{conv},{r['message_overhead']}\n")
+                    f"{r['hybrid']},{r['seed']},{r['n_nodes_actual']},"
+                    f"{r['coverage_pct']:.1f},{conv},{r['message_overhead']}\n")
     print(f"  saved {csv_path}")
 
     print("\nDone!  Check the plots/ directory.")

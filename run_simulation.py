@@ -55,9 +55,12 @@ def clear_logs():
                 f.unlink()
 
 
-def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir):
+def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
+                   hybrid=False):
     """Start N nodes, wait for stabilisation, inject one gossip, collect logs."""
-    print(f"  N={n}  fanout={fanout}  ttl={ttl}  peer_limit={peer_limit}  seed={experiment_seed}")
+    mode = "hybrid" if hybrid else "push"
+    print(f"  N={n}  fanout={fanout}  ttl={ttl}  peer_limit={peer_limit}  "
+          f"seed={experiment_seed}  mode={mode}")
 
     kill_stale_nodes()
     clear_logs()
@@ -78,6 +81,8 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir):
             "-peer-limit", str(peer_limit),
             "-seed", str(experiment_seed * 1000),
         ]
+        if hybrid:
+            seed_cmd.append("-hybrid")
         seed_proc = subprocess.Popen(
             seed_cmd,
             stdin=subprocess.PIPE,
@@ -105,6 +110,8 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir):
                 "-peer-limit", str(peer_limit),
                 "-seed", str(experiment_seed * 1000 + i),
             ]
+            if hybrid:
+                cmd.append("-hybrid")
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -162,6 +169,7 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir):
         "ttl": ttl,
         "peer_limit": peer_limit,
         "seed": experiment_seed,
+        "hybrid": hybrid,
         "base_port": BASE_PORT,
         "gossip_msg": GOSSIP_MSG,
     }
@@ -172,17 +180,20 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir):
 
 
 def schedule_experiments(args):
-    """Return a list of (n, fanout, ttl, peer_limit, seed, dir) tuples."""
+    """Return a list of (n, fanout, ttl, peer_limit, seed, dir, hybrid) tuples."""
     experiments = []
+    modes = [False, True] if args.hybrid else [False]
 
     for n in args.nodes:
         for fanout in args.fanouts:
             for ttl in args.ttls:
                 for pl in args.peer_limits:
-                    for run in range(1, args.runs + 1):
-                        tag = f"N{n}_f{fanout}_ttl{ttl}_pl{pl}_run{run}"
-                        exp_dir = os.path.join(RESULTS_DIR, tag)
-                        experiments.append((n, fanout, ttl, pl, run, exp_dir))
+                    for hybrid in modes:
+                        for run in range(1, args.runs + 1):
+                            mode_tag = "hybrid" if hybrid else "push"
+                            tag = f"N{n}_f{fanout}_ttl{ttl}_pl{pl}_{mode_tag}_run{run}"
+                            exp_dir = os.path.join(RESULTS_DIR, tag)
+                            experiments.append((n, fanout, ttl, pl, run, exp_dir, hybrid))
 
     return experiments
 
@@ -199,6 +210,8 @@ def main():
                         help="TTL values (default: 8)")
     parser.add_argument("--peer-limits", nargs="+", type=int, default=[20],
                         help="Peer-limit values (default: 20)")
+    parser.add_argument("--hybrid", action="store_true",
+                        help="Also run Hybrid Push-Pull mode for comparison")
     parser.add_argument("--sweep", action="store_true",
                         help="Run full parameter sweep (fanout, ttl, peer-limit)")
     parser.add_argument("--skip-build", action="store_true",
@@ -218,14 +231,14 @@ def main():
     print(f"\n{total} experiments scheduled\n")
 
     t_start = time.time()
-    for idx, (n, fanout, ttl, pl, seed, exp_dir) in enumerate(experiments, 1):
+    for idx, (n, fanout, ttl, pl, seed, exp_dir, hybrid) in enumerate(experiments, 1):
         elapsed = time.time() - t_start
         if idx > 1:
             eta = elapsed / (idx - 1) * (total - idx + 1)
             print(f"\n[{idx}/{total}]  (ETA {eta/60:.1f} min)")
         else:
             print(f"\n[{idx}/{total}]")
-        run_experiment(n, fanout, ttl, pl, seed, exp_dir)
+        run_experiment(n, fanout, ttl, pl, seed, exp_dir, hybrid=hybrid)
 
     elapsed = time.time() - t_start
     print(f"\n{'='*60}")
