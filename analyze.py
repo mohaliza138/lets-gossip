@@ -123,6 +123,15 @@ def parse_experiment(experiment_dir):
 
     coverage_pct = len(received_at) / n_nodes * 100.0
 
+    # Extract PoW mining times
+    pow_mining_times = []
+    pow_k_value = meta.get("pow_k")
+    if pow_k_value is not None:
+        for ev in all_events:
+            if ev.get("event") == "proof_of_work_mined":
+                # Collect all mining times for this experiment (all nodes use same pow_k)
+                pow_mining_times.append(ev.get("duration_ms", 0))
+
     return {
         "n": meta["n"],
         "fanout": meta["fanout"],
@@ -130,10 +139,13 @@ def parse_experiment(experiment_dir):
         "peer_limit": meta["peer_limit"],
         "seed": meta["seed"],
         "hybrid": meta.get("hybrid", False),
+        "pow_enabled": meta.get("pow_enabled", False),
+        "pow_k": pow_k_value,
         "n_nodes_actual": n_nodes,
         "coverage_pct": coverage_pct,
         "convergence_time_ms": convergence_ms,
         "message_overhead": overhead,
+        "pow_mining_times": pow_mining_times,
     }
 
 
@@ -276,6 +288,70 @@ def plot_multiline_vs_n(results, param_key, param_label, output_dir):
     print(f"  saved {path}")
 
 
+def plot_pow_analysis(results, output_dir):
+    """Plot PoW mining time vs pow_k difficulty."""
+    # Filter results with PoW enabled
+    pow_results = [r for r in results if r.get("pow_enabled") and r.get("pow_k") is not None]
+    if not pow_results:
+        return
+
+    # Group by pow_k and collect all mining times
+    pow_by_k = defaultdict(list)
+    for r in pow_results:
+        k = r["pow_k"]
+        if r.get("pow_mining_times"):
+            pow_by_k[k].extend(r["pow_mining_times"])
+
+    if not pow_by_k:
+        return
+
+    # Calculate statistics per pow_k
+    ks = sorted(pow_by_k.keys())
+    means = [np.mean(pow_by_k[k]) for k in ks]
+    stds = [np.std(pow_by_k[k]) for k in ks]
+    medians = [np.median(pow_by_k[k]) for k in ks]
+
+    # Create plots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Plot 1: Mean mining time with error bars
+    x_pos = np.arange(len(ks))
+    ax1.bar(x_pos, means, yerr=stds, capsize=5, color="#4C72B0", alpha=0.8, width=0.5)
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels([f"k={k}" for k in ks])
+    ax1.set_xlabel("Proof-of-Work Difficulty (k)", fontsize=11)
+    ax1.set_ylabel("Mean Mining Time (ms)", fontsize=11)
+    ax1.set_title("PoW Mining Time vs Difficulty (Mean ± Std)", fontsize=13)
+    ax1.grid(axis="y", alpha=0.3)
+
+    # Plot 2: Box plot for distribution
+    data_to_plot = [pow_by_k[k] for k in ks]
+    bp = ax2.boxplot(data_to_plot, labels=[f"k={k}" for k in ks], patch_artist=True)
+    for patch in bp['boxes']:
+        patch.set_facecolor("#55A868")
+        patch.set_alpha(0.7)
+    ax2.set_xlabel("Proof-of-Work Difficulty (k)", fontsize=11)
+    ax2.set_ylabel("Mining Time (ms)", fontsize=11)
+    ax2.set_title("PoW Mining Time Distribution", fontsize=13)
+    ax2.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    path = os.path.join(output_dir, "pow_analysis.png")
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"  saved {path}")
+
+    # Print summary table
+    print("\n  PoW Mining Time Summary (mean ± std, median):")
+    print(f"  {'k':>4}  {'Mean (ms)':>14}  {'Std (ms)':>14}  {'Median (ms)':>14}  {'Samples':>10}")
+    print(f"  {'-'*70}")
+    for k in ks:
+        times = pow_by_k[k]
+        mean_str = f"{np.mean(times):.1f} ± {np.std(times):.1f}"
+        median_str = f"{np.median(times):.1f}"
+        print(f"  {k:>4}  {mean_str:>14}  {np.std(times):>14.1f}  {median_str:>14}  {len(times):>10}")
+
+
 def plot_push_vs_hybrid(results, output_dir):
     """Side-by-side bar chart comparing Push-only vs Hybrid for each N."""
     push   = [r for r in results if not r["hybrid"]]
@@ -348,13 +424,14 @@ def main():
         sys.exit(1)
 
     # ---- summary table ----
-    hdr = f"{'N':>4} {'Fan':>4} {'TTL':>4} {'PL':>4} {'Mode':<7} {'Seed':>4} {'Nodes':>5} {'Cov%':>6} {'Conv(ms)':>9} {'Overhead':>9}"
+    hdr = f"{'N':>4} {'Fan':>4} {'TTL':>4} {'PL':>4} {'Mode':<7} {'Pow':>4} {'Seed':>4} {'Nodes':>5} {'Cov%':>6} {'Conv(ms)':>9} {'Overhead':>9}"
     print(f"\n{'='*len(hdr)}\n{hdr}\n{'-'*len(hdr)}")
-    for r in sorted(results, key=lambda x: (x["n"], x["hybrid"], x["fanout"], x["ttl"], x["peer_limit"], x["seed"])):
+    for r in sorted(results, key=lambda x: (x["n"], x["hybrid"], x.get("pow_k") or 0, x["fanout"], x["ttl"], x["peer_limit"], x["seed"])):
         conv = str(r["convergence_time_ms"]) if r["convergence_time_ms"] is not None else "N/A"
         mode = "hybrid" if r["hybrid"] else "push"
+        pow_str = f"k={r['pow_k']}" if r.get("pow_enabled") and r.get("pow_k") is not None else "no"
         print(f"{r['n']:>4} {r['fanout']:>4} {r['ttl']:>4} {r['peer_limit']:>4} "
-              f"{mode:<7} {r['seed']:>4} {r['n_nodes_actual']:>5} {r['coverage_pct']:>5.1f}% "
+              f"{mode:<7} {pow_str:>4} {r['seed']:>4} {r['n_nodes_actual']:>5} {r['coverage_pct']:>5.1f}% "
               f"{conv:>9} {r['message_overhead']:>9}")
     print("=" * len(hdr))
 
@@ -384,16 +461,25 @@ def main():
     plot_multiline_vs_n(results, "ttl", "TTL", args.plots)
     plot_multiline_vs_n(results, "peer_limit", "PeerLimit", args.plots)
 
+    # 5. PoW analysis plots
+    plot_pow_analysis(results, args.plots)
+
     # ---- CSV export ----
     csv_path = os.path.join(args.plots, "results.csv")
     with open(csv_path, "w") as f:
-        f.write("n,fanout,ttl,peer_limit,hybrid,seed,n_nodes_actual,"
-                "coverage_pct,convergence_time_ms,message_overhead\n")
+        f.write("n,fanout,ttl,peer_limit,hybrid,pow_enabled,pow_k,seed,n_nodes_actual,"
+                "coverage_pct,convergence_time_ms,message_overhead,pow_mean_ms,pow_std_ms\n")
         for r in results:
             conv = r["convergence_time_ms"] if r["convergence_time_ms"] is not None else ""
+            pow_k = r.get("pow_k") if r.get("pow_k") is not None else ""
+            pow_enabled = r.get("pow_enabled", False)
+            pow_times = r.get("pow_mining_times", [])
+            pow_mean = np.mean(pow_times) if pow_times else ""
+            pow_std = np.std(pow_times) if pow_times else ""
             f.write(f"{r['n']},{r['fanout']},{r['ttl']},{r['peer_limit']},"
-                    f"{r['hybrid']},{r['seed']},{r['n_nodes_actual']},"
-                    f"{r['coverage_pct']:.1f},{conv},{r['message_overhead']}\n")
+                    f"{r['hybrid']},{pow_enabled},{pow_k},{r['seed']},{r['n_nodes_actual']},"
+                    f"{r['coverage_pct']:.1f},{conv},{r['message_overhead']},"
+                    f"{pow_mean},{pow_std}\n")
     print(f"  saved {csv_path}")
 
     print("\nDone!  Check the plots/ directory.")

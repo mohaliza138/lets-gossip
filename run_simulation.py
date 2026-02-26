@@ -21,7 +21,7 @@ import argparse
 from pathlib import Path
 
 BINARY = "./letsgossip_sim"
-RESULTS_DIR = "results"
+RESULTS_DIR = "results-pow"
 BASE_PORT = 9000
 GOSSIP_MSG = "SIM_TEST_MESSAGE"
 
@@ -56,7 +56,7 @@ def clear_logs():
 
 
 def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
-                   hybrid=False):
+                   hybrid=False, pow_enabled=False, pow_k=4):
     """Start N nodes, wait for stabilisation, inject one gossip, collect logs."""
     mode = "hybrid" if hybrid else "push"
     print(f"  N={n}  fanout={fanout}  ttl={ttl}  peer_limit={peer_limit}  "
@@ -83,6 +83,8 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
         ]
         if hybrid:
             seed_cmd.append("-hybrid")
+        if pow_enabled:
+            seed_cmd.extend(["-pow", "-pow-k", str(pow_k)])
         seed_proc = subprocess.Popen(
             seed_cmd,
             stdin=subprocess.PIPE,
@@ -112,6 +114,8 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
             ]
             if hybrid:
                 cmd.append("-hybrid")
+            if pow_enabled:
+                cmd.extend(["-pow", "-pow-k", str(pow_k)])
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -124,7 +128,7 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
         # ---- stabilisation ----
         # Larger networks need more maintenance-loop cycles (2 s each) for
         # peer discovery to form a connected graph.
-        stabilise_s = max(2, 1 + n * 0.05)
+        stabilise_s = max(10, 1 + n * 0.5)
         print(f"    waiting {stabilise_s:.0f}s for network to stabilise …")
         time.sleep(stabilise_s)
 
@@ -135,9 +139,9 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
             return
         seed_proc.stdin.write(f"{GOSSIP_MSG}\n".encode())
         seed_proc.stdin.flush()
-        print("    gossip injected, waiting for propagation …")
 
-        propagation_s = max(10, 1 + n * 0.2)
+        propagation_s = max(10, 1 + n * 0.5)
+        print(f"    gossip injected, waiting for propagation {propagation_s:.0f}s …")
         time.sleep(propagation_s)
 
     finally:
@@ -170,6 +174,8 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
         "peer_limit": peer_limit,
         "seed": experiment_seed,
         "hybrid": hybrid,
+        "pow_enabled": pow_enabled,
+        "pow_k": pow_k if pow_enabled else None,
         "base_port": BASE_PORT,
         "gossip_msg": GOSSIP_MSG,
     }
@@ -180,20 +186,23 @@ def run_experiment(n, fanout, ttl, peer_limit, experiment_seed, experiment_dir,
 
 
 def schedule_experiments(args):
-    """Return a list of (n, fanout, ttl, peer_limit, seed, dir, hybrid) tuples."""
+    """Return a list of (n, fanout, ttl, peer_limit, seed, dir, hybrid, pow_enabled, pow_k) tuples."""
     experiments = []
     modes = [False, True] if args.hybrid else [False]
+    pow_configs = [(True, k) for k in args.pow_ks] if args.pow_ks else [(False, None)]
 
     for n in args.nodes:
         for fanout in args.fanouts:
             for ttl in args.ttls:
                 for pl in args.peer_limits:
                     for hybrid in modes:
-                        for run in range(1, args.runs + 1):
-                            mode_tag = "hybrid" if hybrid else "push"
-                            tag = f"N{n}_f{fanout}_ttl{ttl}_pl{pl}_{mode_tag}_run{run}"
-                            exp_dir = os.path.join(RESULTS_DIR, tag)
-                            experiments.append((n, fanout, ttl, pl, run, exp_dir, hybrid))
+                        for pow_enabled, pow_k in pow_configs:
+                            for run in range(1, args.runs + 1):
+                                mode_tag = "hybrid" if hybrid else "push"
+                                pow_tag = f"_pow{pow_k}" if pow_enabled else ""
+                                tag = f"N{n}_f{fanout}_ttl{ttl}_pl{pl}_{mode_tag}{pow_tag}_run{run}"
+                                exp_dir = os.path.join(RESULTS_DIR, tag)
+                                experiments.append((n, fanout, ttl, pl, run, exp_dir, hybrid, pow_enabled, pow_k))
 
     return experiments
 
@@ -212,6 +221,8 @@ def main():
                         help="Peer-limit values (default: 20)")
     parser.add_argument("--hybrid", action="store_true",
                         help="Also run Hybrid Push-Pull mode for comparison")
+    parser.add_argument("--pow-ks", nargs="+", type=int, default=None,
+                        help="Proof-of-Work difficulty values (k) to test (e.g., --pow-ks 2 3 4 5)")
     parser.add_argument("--sweep", action="store_true",
                         help="Run full parameter sweep (fanout, ttl, peer-limit)")
     parser.add_argument("--skip-build", action="store_true",
@@ -231,14 +242,14 @@ def main():
     print(f"\n{total} experiments scheduled\n")
 
     t_start = time.time()
-    for idx, (n, fanout, ttl, pl, seed, exp_dir, hybrid) in enumerate(experiments, 1):
+    for idx, (n, fanout, ttl, pl, seed, exp_dir, hybrid, pow_enabled, pow_k) in enumerate(experiments, 1):
         elapsed = time.time() - t_start
         if idx > 1:
             eta = elapsed / (idx - 1) * (total - idx + 1)
             print(f"\n[{idx}/{total}]  (ETA {eta/60:.1f} min)")
         else:
             print(f"\n[{idx}/{total}]")
-        run_experiment(n, fanout, ttl, pl, seed, exp_dir, hybrid=hybrid)
+        run_experiment(n, fanout, ttl, pl, seed, exp_dir, hybrid=hybrid, pow_enabled=pow_enabled, pow_k=pow_k)
 
     elapsed = time.time() - t_start
     print(f"\n{'='*60}")

@@ -41,13 +41,13 @@ func parseConfig() *Config {
 	flag.IntVar(&config.port, "port", 8000, "Listen port")
 	flag.StringVar(&config.bootstrap, "bootstrap", "127.0.0.1:8000", "Seed node host:port (omit if this node is the seed)")
 	flag.IntVar(&config.fanout, "fanout", 3, "Number of peers to forward each GOSSIP to")
-	flag.IntVar(&config.timeToLive, "ttl", 8, "Maximum hops a GOSSIP message may travel")
+	flag.IntVar(&config.timeToLive, "ttl", 9, "Maximum hops a GOSSIP message may travel")
 	flag.IntVar(&config.peerLimit, "peer-limit", 20, "Maximum number of peers in the PeerList")
-	flag.Float64Var(&config.pingInterval, "ping-interval", 2.0, "Seconds between PING rounds")
-	flag.Float64Var(&config.peerTimeout, "peer-timeout", 6.0, "Seconds of silence before a peer is evicted")
+	flag.Float64Var(&config.pingInterval, "ping-interval", 0.1, "Seconds between PING rounds")
+	flag.Float64Var(&config.peerTimeout, "peer-timeout", 3.0, "Seconds of silence before a peer is evicted")
 	flag.Int64Var(&config.randomSeed, "seed", 42, "Random number generator seed for reproducibility")
 	flag.BoolVar(&config.hybrid, "hybrid", false, "Enable Hybrid Push-Pull")
-	flag.Float64Var(&config.pullInterval, "pull-interval", 2.0, "Seconds between IHAVE broadcasts ")
+	flag.Float64Var(&config.pullInterval, "pull-interval", 0.5, "Seconds between IHAVE broadcasts ")
 	flag.IntVar(&config.maxIHaveIDs, "max-ihave-ids", 32, "Maximum message IDs per IHAVE message")
 	flag.BoolVar(&config.powEnabled, "pow", false, "Enable Proof-of-Work on HELLO messages (Phase 4b)")
 	flag.IntVar(&config.powDifficulty, "pow-k", 4, "Proof-of-Work difficulty: leading zero hex characters required (Phase 4b)")
@@ -96,7 +96,7 @@ func newNode(config *Config) *Node {
 		fmt.Printf("[Proof-of-Work] Mining nonce with difficulty k=%d…\n", config.powDifficulty)
 		result := mineProofOfWork(nodeID, config.powDifficulty)
 		node.proofOfWorkResult = &result
-		logger.proofOfWorkMined(result.Nonce, result.DigestHex, result.DurationMS)
+		logger.proofOfWorkMined(result.Nonce, result.DigestHex, result.DurationMS, config.powDifficulty)
 		fmt.Printf("[Proof-of-Work] Done in %dms, nonce=%d\n", result.DurationMS, result.Nonce)
 	}
 
