@@ -39,7 +39,7 @@ func parseConfig() *Config {
 	config := &Config{}
 	flag.StringVar(&config.host, "host", "127.0.0.1", "Listen host")
 	flag.IntVar(&config.port, "port", 8000, "Listen port")
-	flag.StringVar(&config.bootstrap, "bootstrap", "127.0.0.1:8000", "Seed node host:port (omit if this node is the seed)")
+	flag.StringVar(&config.bootstrap, "bootstrap", "", "Seed node host:port (omit if this node is the seed)")
 	flag.IntVar(&config.fanout, "fanout", 3, "Number of peers to forward each GOSSIP to")
 	flag.IntVar(&config.timeToLive, "ttl", 9, "Maximum hops a GOSSIP message may travel")
 	flag.IntVar(&config.peerLimit, "peer-limit", 20, "Maximum number of peers in the PeerList")
