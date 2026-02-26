@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type Config struct {
 	maxIHaveIDs   int     // maximum message IDs per IHAVE (Phase 4a)
 	powEnabled    bool    // enable Proof-of-Work on HELLO (Phase 4b)
 	powDifficulty int     // leading zero hex characters required (Phase 4b)
+	quiet         bool    // suppress log output to console
 }
 
 func (config *Config) selfAddress() string {
@@ -39,16 +41,17 @@ func parseConfig() *Config {
 	flag.IntVar(&config.port, "port", 8000, "Listen port")
 	flag.StringVar(&config.bootstrap, "bootstrap", "", "Seed node host:port (omit if this node is the seed)")
 	flag.IntVar(&config.fanout, "fanout", 3, "Number of peers to forward each GOSSIP to")
-	flag.IntVar(&config.timeToLive, "ttl", 8, "Maximum hops a GOSSIP message may travel")
+	flag.IntVar(&config.timeToLive, "ttl", 9, "Maximum hops a GOSSIP message may travel")
 	flag.IntVar(&config.peerLimit, "peer-limit", 20, "Maximum number of peers in the PeerList")
-	flag.Float64Var(&config.pingInterval, "ping-interval", 2.0, "Seconds between PING rounds")
-	flag.Float64Var(&config.peerTimeout, "peer-timeout", 6.0, "Seconds of silence before a peer is evicted")
+	flag.Float64Var(&config.pingInterval, "ping-interval", 0.1, "Seconds between PING rounds")
+	flag.Float64Var(&config.peerTimeout, "peer-timeout", 3.0, "Seconds of silence before a peer is evicted")
 	flag.Int64Var(&config.randomSeed, "seed", 42, "Random number generator seed for reproducibility")
-	flag.BoolVar(&config.hybrid, "hybrid", false, "Enable Hybrid Push-Pull (Phase 4a)")
-	flag.Float64Var(&config.pullInterval, "pull-interval", 2.0, "Seconds between IHAVE broadcasts (Phase 4a)")
-	flag.IntVar(&config.maxIHaveIDs, "max-ihave-ids", 32, "Maximum message IDs per IHAVE message (Phase 4a)")
+	flag.BoolVar(&config.hybrid, "hybrid", false, "Enable Hybrid Push-Pull")
+	flag.Float64Var(&config.pullInterval, "pull-interval", 0.5, "Seconds between IHAVE broadcasts ")
+	flag.IntVar(&config.maxIHaveIDs, "max-ihave-ids", 32, "Maximum message IDs per IHAVE message")
 	flag.BoolVar(&config.powEnabled, "pow", false, "Enable Proof-of-Work on HELLO messages (Phase 4b)")
 	flag.IntVar(&config.powDifficulty, "pow-k", 4, "Proof-of-Work difficulty: leading zero hex characters required (Phase 4b)")
+	flag.BoolVar(&config.quiet, "quiet", true, "Suppress log output to console")
 	flag.Parse()
 	return config
 }
@@ -62,6 +65,7 @@ type Node struct {
 	engine            *Engine
 	connection        *net.UDPConn
 	proofOfWorkResult *ProofOfWorkResult
+	pingMu            sync.Mutex
 	pingSentAt        map[string]time.Time // ping identifier → time the PING was sent (for round-trip calculation)
 	pingSequence      map[string]int       // peer ID → current PING sequence counter
 }
@@ -70,7 +74,7 @@ func newNode(config *Config) *Node {
 	random := rand.New(rand.NewSource(config.randomSeed))
 	nodeID := newUUID()
 
-	logger, err := newLogger(nodeID, config.selfAddress(), false)
+	logger, err := newLogger(nodeID, config.selfAddress(), config.quiet)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "failed to initialise logger:", err)
 		os.Exit(1)
@@ -92,7 +96,7 @@ func newNode(config *Config) *Node {
 		fmt.Printf("[Proof-of-Work] Mining nonce with difficulty k=%d…\n", config.powDifficulty)
 		result := mineProofOfWork(nodeID, config.powDifficulty)
 		node.proofOfWorkResult = &result
-		logger.proofOfWorkMined(result.Nonce, result.DigestHex, result.DurationMS)
+		logger.proofOfWorkMined(result.Nonce, result.DigestHex, result.DurationMS, config.powDifficulty)
 		fmt.Printf("[Proof-of-Work] Done in %dms, nonce=%d\n", result.DurationMS, result.Nonce)
 	}
 
@@ -268,10 +272,12 @@ func (node *Node) handlePong(message *Message) {
 	}
 	if node.peerManager.recordPong(message.SenderID, payload.PingIdentifier) {
 		var roundTripMS int64
+		node.pingMu.Lock()
 		if sentAt, ok := node.pingSentAt[payload.PingIdentifier]; ok {
 			roundTripMS = time.Since(sentAt).Milliseconds()
 			delete(node.pingSentAt, payload.PingIdentifier)
 		}
+		node.pingMu.Unlock()
 		node.logger.pongReceived(message.SenderID, roundTripMS)
 	}
 }
@@ -282,6 +288,7 @@ func (node *Node) maintenanceLoop() {
 
 	for range ticker.C {
 		// 1. Send PING to every known peer
+		node.pingMu.Lock()
 		for _, peer := range node.peerManager.all() {
 			pingIdentifier := newUUID()
 			node.pingSequence[peer.NodeID]++
@@ -294,6 +301,7 @@ func (node *Node) maintenanceLoop() {
 			node.sendMessage(ping, peer.Address)
 			node.logger.pingSent(peer.NodeID, sequence)
 		}
+		node.pingMu.Unlock()
 
 		// 2. Evict peers that have missed too many consecutive pings
 		for _, peer := range node.peerManager.stale(node.config.peerTimeout, 3) {

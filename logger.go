@@ -144,11 +144,12 @@ func (logger *Logger) messageReceived(messageType, fromAddress string) {
 	})
 }
 
-func (logger *Logger) proofOfWorkMined(nonce int64, digestHex string, durationMS int64) {
+func (logger *Logger) proofOfWorkMined(nonce int64, digestHex string, durationMS int64, powK int) {
 	logger.emit("proof_of_work_mined", map[string]any{
 		"nonce":       nonce,
 		"digest_hex":  digestHex[:16] + "…",
 		"duration_ms": durationMS,
+		"pow_k":       powK,
 	})
 }
 
